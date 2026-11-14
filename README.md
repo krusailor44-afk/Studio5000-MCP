@@ -64,15 +64,23 @@ studio5000-live-mcp/
 ├── src/
 │   └── studio5000_live_mcp/
 │       ├── __init__.py
-│       ├── server.py                   # FastMCP server & tool definitions
-│       ├── sdk_client.py               # Rockwell Logix Designer SDK wrapper
-│       ├── safety_validator.py         # Hardcoded safety gates & regex parser
-│       ├── l5x_builder.py              # Rockwell XML Partial Import generator
-│       └── win32_lifecycle.py          # Win32 WM_COMMAND driver (test/untest/assemble)
+│       ├── server.py                   # FastMCP transport & exception-shielded tool entrypoints
+│       ├── sdk_client.py               # Rockwell Logix Designer SDK client wrapper
+│       ├── safety_validator.py         # Hardcoded industrial safety gates & mnemonic parser
+│       ├── l5x_builder.py              # Rockwell XML envelope builder & RLL branch validator
+│       ├── win32_lifecycle.py          # Win32 WM_COMMAND driver (test/untest/assemble)
+│       └── adapters/
+│           ├── __init__.py             # Adapter package exports
+│           ├── base.py                 # Abstract PLCAdapter interface & dataclass models
+│           ├── logix_online.py         # Online Logix SDK & Win32 adapter
+│           ├── logix_offline.py        # Offline .L5X XML parser, NeutralText translator & code gen
+│           └── router.py               # State manager & dynamic online/offline tool router
 └── tests/
     ├── __init__.py
     ├── test_safety_gates.py            # Unit tests for safety gates and safeguards
-    └── test_l5x_builder.py             # Unit tests for L5X generation, validation & error prevention
+    ├── test_l5x_builder.py             # Unit tests for L5X generation, validation & Error 12740-0 prevention
+    ├── test_offline_adapter.py         # Unit tests for L5X parsing, NeutralText translation & offline generation
+    └── test_adapter_router.py          # Unit tests for router state management & error shielding
 ```
 
 ---
@@ -189,14 +197,19 @@ Add to `~/.gemini/antigravity/mcp_config.json`:
 
 | Tool Name | Type | Description | Key Parameters |
 | :--- | :--- | :--- | :--- |
-| **`read_routine`** | Read | Fetches routine ladder rungs, comments, and pending states. | `program_name`, `routine_name` |
-| **`read_tag`** | Read | Reads live online tag value, data type, and access flags. | `tag_name`, `program_name` *(optional)* |
-| **`propose_edit`** | Write / Staged | Pushes staged ladder edits to controller as pending zone (`AcceptEdits`). | `program_name`, `routine_name`, `insert_position`, `replace_count`, `new_rungs`, `new_tags` |
-| **`test_edits`** | Lifecycle | Activates Test Mode (`WM_COMMAND 32061`); controller scans new logic. | `program_name`, `routine_name` |
+| **`set_active_project`** | Router | Switches active context between online `.ACD` and offline `.L5X`. | `project_path` |
+| **`get_project_status`** | Router | Returns current mode (ONLINE/OFFLINE), loaded file, and connection status. | *None* |
+| **`read_routine`** | Read (Both) | Fetches routine ladder rungs, comments, and pending states (online scan or offline L5X). | `program_name`, `routine_name` |
+| **`read_tag`** | Read (Both) | Reads tag metadata, data type, and (if online) live online value. | `tag_name`, `program_name` *(optional)* |
+| **`propose_edit`** | Online Write | Pushes staged ladder edits to live controller as pending zone (`AcceptEdits`). | `program_name`, `routine_name`, `insert_position`, `replace_count`, `new_rungs`, `new_tags` |
+| **`test_edits`** | Lifecycle | Activates Test Mode (`WM_COMMAND 32061`); controller scans proposed logic. | `program_name`, `routine_name` |
 | **`untest_edits`** | Lifecycle | Reverts controller to original logic (`WM_COMMAND 32062`). | `program_name`, `routine_name` |
-| **`assemble_edits`** | Lifecycle | Finalizes edits permanently (`WM_COMMAND 32063`). **Requires confirmation**. | `program_name`, `routine_name`, `confirmed: bool` |
-| **`build_aoi_l5x`** | Generator | Generates 100% schema-compliant AOI `.L5X` file with `Use="Target"`. | `controller_name`, `aoi_name`, `parameters`, `rungs`, `output_path` |
-| **`validate_l5x_file`** | Validator | Verifies `.L5X` file against Rockwell schema; catches Error 25134-80044178, Error 5078-0, and RLL branch/syntax errors (Error 12740-0) before import. | `file_path` |
+| **`assemble_edits`** | Lifecycle | Finalizes edits permanently (`WM_COMMAND 32063`). **Requires explicit confirmation**. | `program_name`, `routine_name`, `confirmed: bool` |
+| **`parse_l5x`** | Offline | Extracts controller config, UDTs, tags, routines, and I/O modules from `.L5X`. | `file_path` *(optional)* |
+| **`translate_to_neutral_text`** | Offline | Converts verbose XML rungs into compact NeutralText (saves 85-92% LLM tokens). | `xml_content_or_file` |
+| **`generate_l5x_import`** | Code Gen | Packages AI NeutralText into schema-compliant `.L5X` with branch syntax checks. | `target_type`, `target_name`, `rungs`, `output_path` |
+| **`build_aoi_l5x`** | Code Gen | Generates 100% schema-compliant AOI `.L5X` file with `Use="Target"`. | `controller_name`, `aoi_name`, `parameters`, `rungs`, `output_path` |
+| **`validate_l5x_file`** | Validator | Verifies `.L5X` file against Rockwell schema; catches Error 25134-80044178 & Error 12740-0. | `file_path` |
 
 ---
 

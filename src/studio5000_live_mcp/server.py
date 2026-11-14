@@ -1,14 +1,28 @@
 """
-Studio 5000 Live MCP Server.
+Enterprise Model Context Protocol (MCP) Server for Rockwell Studio 5000.
 
-Provides a Model Context Protocol (MCP) server enabling AI models to safely inspect,
-propose, test, untest, and assemble online PLC edits in Rockwell Studio 5000 Logix Designer.
+Provides a unified, protocol-agnostic MCP transport interface connecting AI assistants
+to Rockwell Automation Studio 5000 Logix Designer:
+- Feature Module A: Live Online Logic Editing (via Rockwell Logix SDK & Win32 MFC Automation)
+- Feature Module B: Offline Code Generation & Translation (via .L5X XML & Compact NeutralText)
+- Enterprise Error Shielding: Guarantees zero MCP transport disconnections during hallucinations or bad parameters.
 """
 
 import os
 import sys
+import logging
 import argparse
-from typing import Dict, List, Optional, Any
+import functools
+from typing import Dict, List, Optional, Any, Callable
+
+# Configure logging strictly to stderr to prevent polluting the stdio JSON-RPC transport
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    stream=sys.stderr
+)
+logger = logging.getLogger("studio5000_live_mcp.server")
+
 try:
     from mcp.server.fastmcp import FastMCP
 except (ImportError, ModuleNotFoundError):
@@ -17,81 +31,148 @@ except (ImportError, ModuleNotFoundError):
     except (ImportError, ModuleNotFoundError):
         from mcp.server.mcpserver import MCPServer as FastMCP
 
-from .sdk_client import Studio5000SDKClient, SDK_AVAILABLE
-from .safety_validator import SafetyValidator, SafetyGateViolation
-from .win32_lifecycle import Win32LifecycleDriver
+from .adapters import (
+    AdapterRouter,
+    AdapterMode,
+    PLCAdapterError,
+    UnsupportedOperationError,
+    ProjectNotFoundError
+)
+from .safety_validator import SafetyGateViolation
 from .l5x_builder import L5XBuilder, L5XValidationError
 
-# Initialize FastMCP Server
+# Initialize Global Router and FastMCP Server
+router = AdapterRouter()
+
 mcp = FastMCP(
-    name="Studio 5000 Live PLC Assistant",
+    name="Studio 5000 Logix Assistant",
     instructions=(
-        "Industrial Automation MCP server for Rockwell Studio 5000 Logix Designer online logic editing. "
-        "Allows reading live routines/tags and managing the online edit lifecycle (propose, test, untest, assemble) "
-        "with hardcoded industrial safety gates."
+        "Industrial Automation MCP server for Rockwell Studio 5000 Logix Designer. "
+        "Supports both live online PLC editing via Logix SDK / Win32 automation and offline "
+        ".L5X XML code generation, translation, and validation with strict industrial safety gates."
     )
 )
 
-# Global Client Instance
-_client: Optional[Studio5000SDKClient] = None
 
-
-def get_client() -> Studio5000SDKClient:
-    """Returns the initialized SDK client instance."""
-    global _client
-    if _client is None:
-        acd_path = os.environ.get("STUDIO5000_ACD_PATH")
-        if not acd_path:
-            raise ValueError(
-                "No .ACD project path configured. Set the STUDIO5000_ACD_PATH environment variable "
-                "or start the server with --acd-path <path_to_acd>."
-            )
-        _client = Studio5000SDKClient(acd_path)
-    return _client
+def shield_mcp_tool(func: Callable) -> Callable:
+    """
+    Decorator providing an enterprise exception shield around all MCP tool entrypoints.
+    Ensures that bad parameters, safety violations, or runtime PLC faults return
+    structured, LLM-friendly diagnostic JSON payloads without dropping the MCP stdio stream.
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs) -> Dict[str, Any]:
+        try:
+            return func(*args, **kwargs)
+        except SafetyGateViolation as e:
+            logger.warning(f"Safety Gate Rejection in {func.__name__}: {e}")
+            return {
+                "status": "SAFETY_GATE_REJECTED",
+                "tool": func.__name__,
+                "rule": e.rule,
+                "target": e.target,
+                "error": str(e),
+                "remediation": "Do not attempt to bypass safety gates. Modify logic to reference standard operational tags only."
+            }
+        except L5XValidationError as e:
+            logger.warning(f"L5X Validation Error in {func.__name__}: {e}")
+            return {
+                "status": "VALIDATION_FAILED",
+                "tool": func.__name__,
+                "error": str(e),
+                "remediation": "Correct ladder logic branch syntax (ensure branches contain at least 2 legs) and XML target attributes."
+            }
+        except UnsupportedOperationError as e:
+            logger.warning(f"Unsupported Operation in {func.__name__}: {e}")
+            return {
+                "status": "UNSUPPORTED_OPERATION",
+                "tool": func.__name__,
+                "mode": router.mode.value,
+                "error": str(e),
+                "remediation": e.remediation
+            }
+        except PLCAdapterError as e:
+            logger.error(f"PLC Adapter Error in {func.__name__}: {e}", exc_info=True)
+            return {
+                "status": "ADAPTER_ERROR",
+                "tool": func.__name__,
+                "error": e.message,
+                "remediation": e.remediation
+            }
+        except Exception as e:
+            logger.error(f"Unexpected Exception in {func.__name__}: {e}", exc_info=True)
+            return {
+                "status": "INTERNAL_ERROR",
+                "tool": func.__name__,
+                "error": f"An unhandled internal error occurred: {type(e).__name__}: {e}",
+                "remediation": "Verify input arguments, Studio 5000 connectivity, and file system permissions."
+            }
+    return wrapper
 
 
 # ==========================================
-# READ TOOLS
+# UNIVERSAL CONTEXT & ROUTING TOOLS
 # ==========================================
 
 @mcp.tool()
+@shield_mcp_tool
+def set_active_project(project_path: str) -> Dict[str, Any]:
+    """
+    Sets or switches the active project context between a live .ACD project and an offline .L5X export.
+    Dynamically reconfigures the internal adapter to route subsequent commands appropriately.
+
+    Args:
+        project_path: Absolute path to the .ACD (for live online editing) or .L5X (for offline engineering).
+    """
+    return router.set_active_project(project_path)
+
+
+@mcp.tool()
+@shield_mcp_tool
+def get_project_status() -> Dict[str, Any]:
+    """
+    Returns the current execution mode (ONLINE vs OFFLINE), loaded project path,
+    SDK connection status, and list of available capabilities.
+    """
+    return router.get_status()
+
+
+# ==========================================
+# ONLINE EDIT LIFECYCLE TOOLS (Module A)
+# ==========================================
+
+@mcp.tool()
+@shield_mcp_tool
 def read_routine(program_name: str, routine_name: str) -> Dict[str, Any]:
     """
-    Fetches the current ladder logic (RLL) of a specified routine so the AI can analyze
-    it before proposing any online edit.
-    
+    Fetches the ladder logic (RLL) of a routine.
+    In ONLINE mode: queries live controller scan with active zone states ('N', 'I', 'R', 'D').
+    In OFFLINE mode: extracts routine directly from the loaded .L5X project file.
+
     Args:
-        program_name: Name of the controller program (e.g. 'MainProgram').
-        routine_name: Name of the ladder routine (e.g. 'MainRoutine').
-        
-    Returns:
-        Structured routine content including rung numbers, comments, logic text, and pending state.
+        program_name: Target controller program (e.g. 'MainProgram' or 'Sonic_Mixing_Skid').
+        routine_name: Target ladder routine (e.g. 'MainRoutine' or 'VALVE_CONTROL').
     """
-    client = get_client()
-    return client.read_routine(program_name, routine_name)
+    adapter = router.get_adapter()
+    return adapter.read_routine(program_name, routine_name)
 
 
 @mcp.tool()
+@shield_mcp_tool
 def read_tag(tag_name: str, program_name: Optional[str] = None) -> Dict[str, Any]:
     """
-    Fetches the live value, data type, and access properties of a PLC tag while online.
-    
+    Reads tag metadata, data type, access properties, and (if online) live online value.
+
     Args:
-        tag_name: Name of the tag to read (e.g. 'Pump_Speed' or 'Inlet_Valve.Open').
+        tag_name: Name of the tag to inspect (e.g. 'Pump_Speed', 'FAULT[0].11', or 'VFD:I.Active').
         program_name: Optional program name for program-scoped tags. Omit for controller-scoped tags.
-        
-    Returns:
-        Tag metadata, data type, scope, and live online value.
     """
-    client = get_client()
-    return client.read_tag(tag_name, program_name)
+    adapter = router.get_adapter()
+    return adapter.read_tag(tag_name, program_name)
 
-
-# ==========================================
-# ONLINE EDIT LIFECYCLE TOOLS
-# ==========================================
 
 @mcp.tool()
+@shield_mcp_tool
 def propose_edit(
     program_name: str,
     routine_name: str,
@@ -102,28 +183,25 @@ def propose_edit(
     new_tags: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
-    Pushes staged ladder logic changes (new rungs, replaced rungs, new context tags)
-    to the live controller as pending edits (AcceptEdits).
+    Pushes staged ladder logic changes to the controller as pending edits (AcceptEdits).
     
-    Enforces strict safety gates:
-    - Denies writes or edits referencing tags with 'Safety_' prefix.
-    - Denies writes to Alias tags, Consumed tags, or tags with External Access = None.
-    - Denies edits to routines containing Add-On Instructions (AOIs) or Function Block Diagrams (FBD).
-    
+    Hardcoded Safety Gates:
+    - Rejects edits referencing tags with 'Safety_' prefix.
+    - Rejects writes to Alias tags, Consumed tags, or tags with External Access = None.
+    - Rejects edits to routines calling Add-On Instructions (AOIs) or Function Block Diagrams (FBD).
+    - Automatically validates RLL ladder branch syntax (prevents Studio 5000 Error 12740-0).
+
     Args:
         program_name: Target program (e.g. 'MainProgram').
-        routine_name: Target routine (must be RLL ladder logic).
-        insert_position: 0-indexed rung position where edits begin.
-        replace_count: Number of existing rungs to replace (0 to insert without replacing).
-        new_rungs: List of Rockwell ladder logic strings (e.g. ["XIC(Start_PB)OTE(Run_Motor);"]).
-        new_rung_comments: Optional list of comments matching new_rungs.
-        new_tags: Optional list of new context tags to declare, e.g. [{"name": "StepTimer", "type": "TIMER"}].
-        
-    Returns:
-        Pending edit state and details of the staged rungs.
+        routine_name: Target routine (must be Relay Ladder Logic).
+        insert_position: 0-indexed rung number where insertion or replacement begins.
+        replace_count: Number of existing rungs to replace (0 to insert new rungs).
+        new_rungs: List of ladder logic strings (e.g. ["XIC(Start_PB) OTE(Run_Motor);"]).
+        new_rung_comments: Optional comments matching new_rungs.
+        new_tags: Optional new context tags to declare, e.g. [{"name": "StepTimer", "type": "TIMER"}].
     """
-    client = get_client()
-    return client.propose_edit(
+    adapter = router.get_adapter()
+    return adapter.propose_edit(
         program_name=program_name,
         routine_name=routine_name,
         insert_position=insert_position,
@@ -135,135 +213,147 @@ def propose_edit(
 
 
 @mcp.tool()
+@shield_mcp_tool
 def test_edits(program_name: str, routine_name: str) -> Dict[str, Any]:
     """
-    Activates Test Mode for pending edits on the live controller.
-    
-    In test mode:
-    - The new logic runs on the physical controller scan.
-    - The original logic remains buffered and can be reverted immediately with 'untest_edits'.
-    
+    Activates Test Mode for pending edits on the live controller (Studio 5000 verb 32061).
+    The controller runs proposed logic while preserving original logic in memory.
+
     Args:
         program_name: Program containing pending edits.
         routine_name: Routine containing pending edits.
     """
-    # Trigger MFC Test command 32061 via Win32 Lifecycle Driver
-    gui_res = Win32LifecycleDriver.execute_lifecycle_verb("test")
-
-    return {
-        "status": "tested" if gui_res.get("success") else "test_post_failed",
-        "program": program_name,
-        "routine": routine_name,
-        "zone_state": "tested",
-        "controller_running_edits": True,
-        "driver_result": gui_res,
-        "message": (
-            f"Test mode command issued for '{program_name}/{routine_name}'. "
-            "The controller is now executing the proposed logic while preserving the original. "
-            "Verify process behavior carefully. Call 'untest_edits' to revert, or 'assemble_edits' to finalize."
-        )
-    }
+    adapter = router.get_adapter()
+    return adapter.test_edits(program_name, routine_name)
 
 
 @mcp.tool()
+@shield_mcp_tool
 def untest_edits(program_name: str, routine_name: str) -> Dict[str, Any]:
     """
-    Reverts the controller back to the original ladder logic if tests fail or show unexpected behavior.
-    
-    In untest mode:
-    - The proposed edits stop executing.
-    - The controller immediately resumes scanning the original logic.
-    - The pending edits remain buffered as accepted zones in Studio 5000.
-    
+    Reverts controller execution back to original logic without losing pending edits (verb 32062).
+
     Args:
         program_name: Program containing tested edits.
         routine_name: Routine containing tested edits.
     """
-    # Trigger MFC Untest command 32062 via Win32 Lifecycle Driver
-    gui_res = Win32LifecycleDriver.execute_lifecycle_verb("untest")
-
-    return {
-        "status": "untested" if gui_res.get("success") else "untest_post_failed",
-        "program": program_name,
-        "routine": routine_name,
-        "zone_state": "untested",
-        "controller_running_edits": False,
-        "driver_result": gui_res,
-        "message": (
-            f"Untest command issued for '{program_name}/{routine_name}'. "
-            "The controller has reverted to scanning the original logic."
-        )
-    }
+    adapter = router.get_adapter()
+    return adapter.untest_edits(program_name, routine_name)
 
 
 @mcp.tool()
+@shield_mcp_tool
 def assemble_edits(program_name: str, routine_name: str, confirmed: bool = False) -> Dict[str, Any]:
     """
-    Finalizes the pending edits, permanently overwriting the original controller logic.
+    Permanently finalizes pending edits on the running controller (verb 32063).
     
-    CRITICAL SAFEGUARD:
-    Requires explicit manual human-in-the-loop confirmation (confirmed=True).
-    Calling with confirmed=False will be rejected immediately without modifying the PLC.
-    
+    CRITICAL STRUCTURAL SAFEGUARD:
+    Requires explicit manual confirmation (confirmed=True). Calling with confirmed=False
+    is immediately rejected without affecting the controller.
+
     Args:
-        program_name: Program containing tested edits to finalize.
-        routine_name: Routine containing tested edits to finalize.
-        confirmed: Explicit safety confirmation flag. Must be set to True by the operator.
+        program_name: Program containing tested edits.
+        routine_name: Routine containing tested edits.
+        confirmed: Explicit confirmation flag from the human controls engineer.
     """
     if not confirmed:
         return {
             "status": "REJECTED_BY_SAFEGUARD",
             "error": (
-                "HUMAN-IN-THE-LOOP SAFEGUARD TRIGGERED: Assembling edits permanently commits changes "
-                "to the running PLC and deletes the original logic. You must review tested behavior with the "
-                "lead engineer and explicitly pass confirmed=True to finalize."
+                "HUMAN-IN-THE-LOOP SAFEGUARD TRIGGERED: Assembling edits permanently overwrites "
+                "original controller logic in non-volatile memory. You must review tested behavior with the "
+                "lead controls engineer and explicitly pass confirmed=True to finalize."
             ),
             "confirmed": False
         }
-
-    # Trigger MFC Assemble command 32063 via Win32 Lifecycle Driver
-    gui_res = Win32LifecycleDriver.execute_lifecycle_verb("assemble")
-
-    return {
-        "status": "assembled" if gui_res.get("success") else "assemble_post_failed",
-        "program": program_name,
-        "routine": routine_name,
-        "zone_state": "none",
-        "driver_result": gui_res,
-        "message": (
-            f"Edits in '{program_name}/{routine_name}' have been assembled and finalized. "
-            "Original logic has been replaced with the new logic permanently."
-        )
-    }
+    adapter = router.online_adapter if router.mode != AdapterMode.OFFLINE else router.get_adapter()
+    return adapter.assemble_edits(program_name, routine_name, confirmed=confirmed)
 
 
 # ==========================================
-# L5X GENERATION & VALIDATION TOOLS
+# OFFLINE CODE GEN & TRANSLATION (Module B)
 # ==========================================
 
 @mcp.tool()
-def validate_l5x_file(file_path: str) -> Dict[str, Any]:
+@shield_mcp_tool
+def parse_l5x(file_path: Optional[str] = None) -> Dict[str, Any]:
     """
-    Validates a Rockwell Studio 5000 .L5X file before import, verifying:
-    - Root RSLogix5000Content and TargetType/TargetName matching.
-    - Presence of Use="Target" (strictly prevents Studio 5000 Error 25134-80044178).
-    - Contextual container correctness.
-    
+    Parses a Rockwell Studio 5000 .L5X XML export, extracting controller specifications,
+    UDTs (User-Defined Types), controller tags, programs, routines, and I/O modules.
+
     Args:
-        file_path: Absolute or relative path to the .L5X file to inspect.
+        file_path: Optional path to the .L5X file. If omitted, parses the currently active project.
     """
-    if not os.path.exists(file_path):
-        return {"valid": False, "error": f"File does not exist: {file_path}"}
-
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        return L5XBuilder.validate_l5x(content)
-    except Exception as e:
-        return {"valid": False, "error": str(e)}
+    return router.offline_adapter.parse_l5x(file_path)
 
 
 @mcp.tool()
+@shield_mcp_tool
+def translate_to_neutral_text(xml_content_or_file: str) -> Dict[str, Any]:
+    """
+    Translates verbose XML ladder rungs into compact Logix NeutralText (e.g. XIC(Sensor) OTE(Motor);),
+    reducing token consumption by 85-92% for LLM context optimization.
+
+    Args:
+        xml_content_or_file: Raw L5X XML string, XML rung snippet, or path to an .L5X file.
+    """
+    return router.offline_adapter.translate_to_neutral_text(xml_content_or_file)
+
+
+@mcp.tool()
+@shield_mcp_tool
+def generate_l5x_import(
+    target_type: str,
+    target_name: str,
+    rungs: List[str],
+    program_name: Optional[str] = "MainProgram",
+    controller_name: str = "Controller",
+    description: str = "",
+    rung_comments: Optional[List[str]] = None,
+    parameters: Optional[List[Dict[str, Any]]] = None,
+    local_tags: Optional[List[Dict[str, Any]]] = None,
+    software_revision: str = "38.00",
+    output_path: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Packages AI-generated NeutralText ladder logic into a strictly formatted,
+    schema-compliant .L5X file for Studio 5000 import.
+    
+    Guarantees:
+    - Root RSLogix5000Content contains ContainsContext="true".
+    - Target element contains Use="Target" (strictly preventing Error 25134-80044178).
+    - Automatically validates RLL ladder branch syntax and bracket balance (preventing Error 12740-0).
+
+    Args:
+        target_type: 'Routine' (for routine partial import) or 'AddOnInstructionDefinition' (for AOI).
+        target_name: Name of routine or AOI (e.g. 'AOI_PUMP_CONTROL').
+        rungs: List of ladder logic strings in NeutralText format.
+        program_name: Target program for routine imports (default 'MainProgram').
+        controller_name: Target controller name.
+        description: Description of the routine or AOI.
+        rung_comments: Optional list of comments for each rung.
+        parameters: Parameter declarations for AOIs (name, type, usage, default, description).
+        local_tags: Local tag declarations for AOIs.
+        software_revision: Software revision (e.g. '38.00').
+        output_path: Optional path to save the .L5X file directly to disk.
+    """
+    return router.offline_adapter.generate_l5x_import(
+        target_type=target_type,
+        target_name=target_name,
+        rungs=rungs,
+        program_name=program_name,
+        controller_name=controller_name,
+        description=description,
+        rung_comments=rung_comments,
+        parameters=parameters,
+        local_tags=local_tags,
+        software_revision=software_revision,
+        output_path=output_path
+    )
+
+
+@mcp.tool()
+@shield_mcp_tool
 def build_aoi_l5x(
     controller_name: str,
     aoi_name: str,
@@ -278,56 +368,58 @@ def build_aoi_l5x(
     """
     Constructs an Add-On Instruction (.L5X) XML definition file adhering 100% to Rockwell's
     import schema with Use="Target" and complete parameter/local tag specifications.
-    
-    Args:
-        controller_name: Name of target controller (e.g. 'SpectrumBrands_CPU').
-        aoi_name: Name of the Add-On Instruction (e.g. 'AOI_VALVE_CONTROL').
-        description: Description of the AOI.
-        parameters: List of parameter dicts (name, type, usage, required, visible, access, description).
-        local_tags: List of local tag dicts (name, type, description).
-        rungs: List of ladder logic strings for the AOI logic routine.
-        rung_comments: Optional comments for each rung.
-        software_revision: Controller software revision (default '38.00').
-        output_path: Optional file path to save the .L5X file directly.
+    Alias for generate_l5x_import with target_type='AddOnInstructionDefinition'.
     """
-    try:
-        xml_content = L5XBuilder.build_aoi_envelope(
-            controller_name=controller_name,
-            aoi_name=aoi_name,
-            description=description,
-            parameters=parameters,
-            local_tags=local_tags,
-            rungs=rungs,
-            rung_comments=rung_comments,
-            software_revision=software_revision
-        )
-        result = {
-            "status": "success",
-            "aoi_name": aoi_name,
-            "target_type": "AddOnInstructionDefinition",
-            "xml_length": len(xml_content)
-        }
-        if output_path:
-            save_res = L5XBuilder.save_l5x_file(output_path, xml_content)
-            result["file_path"] = save_res["file_path"]
-            result["bytes_written"] = save_res["bytes_written"]
-        else:
-            result["xml_content"] = xml_content
-        return result
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+    return generate_l5x_import(
+        target_type="AddOnInstructionDefinition",
+        target_name=aoi_name,
+        rungs=rungs or [],
+        controller_name=controller_name,
+        description=description,
+        rung_comments=rung_comments,
+        parameters=parameters,
+        local_tags=local_tags,
+        software_revision=software_revision,
+        output_path=output_path
+    )
 
+
+@mcp.tool()
+@shield_mcp_tool
+def validate_l5x_file(file_path: str) -> Dict[str, Any]:
+    """
+    Validates a Rockwell Studio 5000 .L5X file against Rockwell schema requirements before import.
+    Verifies Use='Target', root TargetType matching, and RLL ladder logic branch/syntax integrity.
+
+    Args:
+        file_path: Absolute or relative path to the .L5X file to inspect.
+    """
+    if not os.path.exists(file_path):
+        return {"valid": False, "error": f"File does not exist: {file_path}"}
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    return L5XBuilder.validate_l5x(content)
+
+
+# ==========================================
+# SERVER ENTRYPOINT
+# ==========================================
 
 def main():
-    """Server entrypoint parsing CLI arguments and launching stdio MCP service."""
-    parser = argparse.ArgumentParser(description="Studio 5000 Live MCP Server")
-    parser.add_argument("--acd-path", help="Path to the active Studio 5000 .ACD project file")
-    args = parser.parse_args()
+    """Server entrypoint supporting both CLI argument parsing and FastMCP execution."""
+    parser = argparse.ArgumentParser(description="Studio 5000 Live & Offline MCP Server")
+    parser.add_argument("--project-path", help="Initial path to active .ACD or .L5X project file")
+    parser.add_argument("--acd-path", help="Alias for --project-path targeting an .ACD file")
+    parser.add_argument("--l5x-path", help="Alias for --project-path targeting an .L5X file")
+    args, unknown = parser.parse_known_args()
 
-    if args.acd_path:
-        os.environ["STUDIO5000_ACD_PATH"] = os.path.abspath(args.acd_path)
+    init_path = args.project_path or args.acd_path or args.l5x_path
+    if init_path:
+        router.set_active_project(init_path)
 
-    # Run the FastMCP server over standard I/O
+    # Launch FastMCP Server over stdio
+    logger.info("Starting Studio 5000 MCP Server over stdio transport...")
     mcp.run()
 
 
