@@ -1,0 +1,112 @@
+"""
+Unit Tests for Studio 5000 Live MCP Server Safety Gates.
+"""
+
+import pytest
+from studio5000_live_mcp.safety_validator import SafetyValidator, SafetyGateViolation
+from studio5000_live_mcp.server import assemble_edits
+
+
+def test_safety_tag_prefix_rejection():
+    """Verify that tags with 'Safety_' prefix in any casing are rejected."""
+    with pytest.raises(SafetyGateViolation) as exc_info:
+        SafetyValidator.validate_tag_name("Safety_Estop_PB")
+    assert "PROHIBITED_SAFETY_TAG" in str(exc_info.value)
+
+    with pytest.raises(SafetyGateViolation) as exc_info:
+        SafetyValidator.validate_tag_name("safety_light_curtain")
+    assert "PROHIBITED_SAFETY_TAG" in str(exc_info.value)
+
+    with pytest.raises(SafetyGateViolation) as exc_info:
+        SafetyValidator.validate_tag_name("SAFETY_DOOR_INTERLOCK")
+    assert "PROHIBITED_SAFETY_TAG" in str(exc_info.value)
+
+    # Valid non-safety tags must pass
+    SafetyValidator.validate_tag_name("Standard_Pump_Run")
+    SafetyValidator.validate_tag_name("Mixer_Motor_Speed")
+
+
+def test_alias_tag_rejection():
+    """Verify that alias tags are rejected."""
+    metadata = {
+        "DataType": "BOOL",
+        "is_alias": True,
+        "alias_for": "Local:1:I.Data.0"
+    }
+    with pytest.raises(SafetyGateViolation) as exc_info:
+        SafetyValidator.validate_tag_metadata("Start_Button_Alias", metadata)
+    assert "PROHIBITED_ALIAS_TAG" in str(exc_info.value)
+
+
+def test_consumed_tag_rejection():
+    """Verify that consumed tags are rejected."""
+    metadata = {
+        "DataType": "DINT",
+        "Usage": "Consumed"
+    }
+    with pytest.raises(SafetyGateViolation) as exc_info:
+        SafetyValidator.validate_tag_metadata("Interlock_In_From_PLC2", metadata)
+    assert "PROHIBITED_CONSUMED_TAG" in str(exc_info.value)
+
+
+def test_external_access_none_rejection():
+    """Verify that tags with ExternalAccess = None are rejected."""
+    metadata = {
+        "DataType": "REAL",
+        "ExternalAccess": "None"
+    }
+    with pytest.raises(SafetyGateViolation) as exc_info:
+        SafetyValidator.validate_tag_metadata("Internal_PID_Gain", metadata)
+    assert "PROHIBITED_EXTERNAL_ACCESS_NONE" in str(exc_info.value)
+
+
+def test_unsupported_routine_types():
+    """Verify that FBD, SFC, and ST routines are rejected for online edits."""
+    with pytest.raises(SafetyGateViolation) as exc_info:
+        SafetyValidator.validate_routine_type("Process_Control", "FBD")
+    assert "UNSUPPORTED_ROUTINE_TYPE" in str(exc_info.value)
+
+    with pytest.raises(SafetyGateViolation) as exc_info:
+        SafetyValidator.validate_routine_type("Batch_Sequence", "SFC")
+    assert "UNSUPPORTED_ROUTINE_TYPE" in str(exc_info.value)
+
+    # RLL ladder logic must pass
+    SafetyValidator.validate_routine_type("MainRoutine", "RLL")
+
+
+def test_aoi_instruction_rejection():
+    """Verify that Add-On Instructions (AOIs) are caught and rejected in proposed rungs."""
+    known_aois = {"VFD_CONTROL", "VALVE_AOI"}
+    
+    # Rung calling an AOI
+    bad_rung = ["XIC(Auto_Mode)VFD_CONTROL(VFD_Drive_1)OTE(Drive_Ready);"]
+    with pytest.raises(SafetyGateViolation) as exc_info:
+        SafetyValidator.validate_proposed_rungs(
+            routine_name="MotorControl",
+            routine_type="RLL",
+            rungs=bad_rung,
+            known_aois=known_aois
+        )
+    assert "PROHIBITED_AOI_INSTRUCTION" in str(exc_info.value)
+
+
+def test_valid_rll_rung_acceptance():
+    """Verify that standard ladder logic instructions and standard tags pass validation."""
+    valid_rungs = [
+        "XIC(Start_PB)XIO(Stop_PB)OTE(Motor_Run);",
+        "TON(Mixer_Timer,?,?);",
+        "EQU(State_Step,10)MOV(50,Pump_Speed);"
+    ]
+    SafetyValidator.validate_proposed_rungs(
+        routine_name="MainRoutine",
+        routine_type="RLL",
+        rungs=valid_rungs
+    )
+
+
+def test_assemble_edits_unconfirmed_safeguard():
+    """Verify that assemble_edits refuses execution when confirmed=False."""
+    result = assemble_edits(program_name="MainProgram", routine_name="MainRoutine", confirmed=False)
+    assert result["status"] == "REJECTED_BY_SAFEGUARD"
+    assert "HUMAN-IN-THE-LOOP SAFEGUARD TRIGGERED" in result["error"]
+    assert result["confirmed"] is False
