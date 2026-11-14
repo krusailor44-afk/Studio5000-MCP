@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "studio5000-live-mcp"
-version = "0.1.0"
-description = "Model Context Protocol (MCP) server for live online PLC logic editing and monitoring in Rockwell Studio 5000 Logix Designer"
+name = "studio5000-mcp"
+version = "0.2.0"
+description = "Model Context Protocol (MCP) server for live online and offline PLC logic engineering in Rockwell Studio 5000 Logix Designer"
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [
@@ -19,6 +19,7 @@ dependencies = [
 ]
 
 [project.scripts]
+studio5000-mcp = "studio5000_live_mcp.server:main"
 studio5000-live-mcp = "studio5000_live_mcp.server:main"
 
 [tool.setuptools.packages.find]

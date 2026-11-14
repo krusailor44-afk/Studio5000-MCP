@@ -1,6 +1,6 @@
-# Studio 5000 Live & Offline MCP Server
+# Studio 5000 MCP Server
 
-[![CI](https://github.com/krusailor44-afk/studio5000-live-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/krusailor44-afk/studio5000-live-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/krusailor44-afk/studio5000-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/krusailor44-afk/studio5000-mcp/actions/workflows/ci.yml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![Rockwell Studio 5000](https://img.shields.io/badge/Rockwell-Studio%205000%20(v30--v38)-red.svg)](https://www.rockwellautomation.com/)
 [![Protocol: Model Context Protocol](https://img.shields.io/badge/MCP-FastMCP-purple.svg)](https://modelcontextprotocol.io/)
@@ -111,7 +111,7 @@ The server **automatically modernizes** legacy comparison instructions when comp
 ## Directory Structure
 
 ```text
-studio5000-live-mcp/
+studio5000-mcp/
 ├── .github/workflows/ci.yml           # GitHub Actions Automated CI Pipeline
 ├── LICENSE                            # MIT License
 ├── README.md                          # Enterprise Documentation
@@ -156,8 +156,8 @@ studio5000-live-mcp/
 ### 2. Installation
 ```powershell
 # Clone the repository
-git clone https://github.com/krusailor44-afk/studio5000-live-mcp.git
-cd studio5000-live-mcp
+git clone https://github.com/krusailor44-afk/studio5000-mcp.git
+cd studio5000-mcp
 
 # Create virtual environment
 python -m venv .venv
@@ -184,8 +184,8 @@ Add this to your `claude_desktop_config.json` (`%APPDATA%\Claude\claude_desktop_
 ```json
 {
   "mcpServers": {
-    "studio5000-live": {
-      "command": "C:\\path\\to\\studio5000-live-mcp\\.venv\\Scripts\\python.exe",
+    "studio5000-mcp": {
+      "command": "C:\\path\\to\\studio5000-mcp\\.venv\\Scripts\\python.exe",
       "args": [
         "-m",
         "studio5000_live_mcp.server",
@@ -199,7 +199,7 @@ Add this to your `claude_desktop_config.json` (`%APPDATA%\Claude\claude_desktop_
 
 ### Cursor / Cline / Antigravity
 Configure via your IDE's MCP settings:
-* **Command**: `C:\path\to\studio5000-live-mcp\.venv\Scripts\python.exe`
+* **Command**: `C:\path\to\studio5000-mcp\.venv\Scripts\python.exe`
 * **Args**: `["-m", "studio5000_live_mcp.server"]`
 
 ---

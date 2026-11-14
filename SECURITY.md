@@ -2,7 +2,7 @@
 
 ## Industrial Controls Safety Boundaries
 
-The **Studio 5000 Live MCP Server** is designed for integration into manufacturing, process control, and industrial automation environments. As such, software bugs or improper configurations carry physical world consequences.
+The **Studio 5000 MCP Server** is designed for integration into manufacturing, process control, and industrial automation environments. As such, software bugs or improper configurations carry physical world consequences.
 
 To safeguard personnel, machinery, and production uptime:
 

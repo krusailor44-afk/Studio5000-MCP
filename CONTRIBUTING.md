@@ -1,6 +1,6 @@
-# Contributing to Studio 5000 Live MCP Server
+# Contributing to Studio 5000 MCP Server
 
-Thank you for your interest in contributing to **Studio 5000 Live MCP Server**!
+Thank you for your interest in contributing to **Studio 5000 MCP Server**!
 
 This project bridges generative AI models (Claude, Cursor, Antigravity, ChatGPT) with Rockwell Automation Allen-Bradley ControlLogix & CompactLogix PLCs via the official Rockwell Logix Designer Python SDK and offline L5X toolchains.
 
@@ -29,8 +29,8 @@ Before submitting any Pull Request, verify that your changes uphold our hardcode
 
 ### 2. Clone and Configure Environment
 ```powershell
-git clone https://github.com/krusailor44-afk/studio5000-live-mcp.git
-cd studio5000-live-mcp
+git clone https://github.com/krusailor44-afk/studio5000-mcp.git
+cd studio5000-mcp
 
 # Create virtual environment
 python -m venv .venv
