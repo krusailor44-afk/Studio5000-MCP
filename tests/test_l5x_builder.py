@@ -205,3 +205,66 @@ def test_build_aoi_envelope_rejects_invalid_rung():
         )
     assert "12740-0" in str(exc_info.value)
 
+
+def test_modernize_rll_mnemonics_iec_conversion():
+    """Verifies that legacy Rockwell comparison mnemonics are modernized for v36+."""
+    legacy_rung = "LES(Target, Min) GRT(Target, Max) LEQ(A, B) GEQ(C, D) EQU(Mode, 1) NEQ(State, 0) OTE(Valid);"
+    modernized = L5XBuilder.modernize_rll_mnemonics(legacy_rung, software_revision="38.00")
+    assert "LT(Target, Min)" in modernized
+    assert "GT(Target, Max)" in modernized
+    assert "LE(A, B)" in modernized
+    assert "GE(C, D)" in modernized
+    assert "EQ(Mode, 1)" in modernized
+    assert "NE(State, 0)" in modernized
+    assert "LES(" not in modernized
+    assert "GRT(" not in modernized
+
+    # On v32 (pre-v36), legacy mnemonics must be preserved
+    pre_v36 = L5XBuilder.modernize_rll_mnemonics(legacy_rung, software_revision="32.00")
+    assert pre_v36 == legacy_rung
+
+
+def test_build_aoi_envelope_auto_modernizes_for_v38():
+    """Verifies that building an AOI automatically converts legacy mnemonics for v38 target."""
+    xml = L5XBuilder.build_aoi_envelope(
+        controller_name="SpectrumBrands_CPU",
+        aoi_name="AOI_TEST_MODERN",
+        rungs=["LES(Val, 10) MOVE(10, Val);"],
+        software_revision="38.03"
+    )
+    assert "LT(Val, 10)" in xml
+    assert "LES(" not in xml
+
+    val = L5XBuilder.validate_l5x(xml)
+    assert val["valid"] is True
+    assert len(val.get("warnings", [])) == 0
+
+
+def test_validate_l5x_warns_on_legacy_mnemonics():
+    """Verifies that validate_l5x flags legacy mnemonics in v38 documents as actionable warnings."""
+    raw_v38_with_legacy = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="38.00" TargetName="TestRoutine" TargetType="Routine" ContainsContext="true">
+  <Controller Use="Context" Name="TestCPU">
+    <Programs Use="Context">
+      <Program Use="Context" Name="Main">
+        <Routines Use="Context">
+          <Routine Use="Target" Name="TestRoutine" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[LES(Speed, 10) OTE(Slow);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+  </Controller>
+</RSLogix5000Content>
+"""
+    val = L5XBuilder.validate_l5x(raw_v38_with_legacy)
+    assert val["valid"] is True
+    assert len(val["warnings"]) == 1
+    assert "Uses legacy comparison mnemonic 'LES'" in val["warnings"][0]
+    assert "Studio 5000 v36+ requires modern IEC mnemonic 'LT'" in val["warnings"][0]
+
+

@@ -112,8 +112,9 @@ class LogixOnlineAdapter(PLCAdapter):
         """Pushes staged ladder logic changes to controller as pending edits (AcceptEdits)."""
         client = self._ensure_client()
 
-        # 1. Pre-validate RLL ladder syntax (branches, parens, brackets, commas)
-        for idx, rung in enumerate(new_rungs):
+        # 1. Modernize legacy comparison mnemonics and pre-validate RLL ladder syntax
+        modernized_rungs = [L5XBuilder.modernize_rll_mnemonics(r) for r in new_rungs]
+        for idx, rung in enumerate(modernized_rungs):
             L5XBuilder.validate_rll_syntax(rung, rung_idx=insert_position + idx)
 
         # 2. SDK execution with built-in safety gate checks
@@ -123,7 +124,7 @@ class LogixOnlineAdapter(PLCAdapter):
                 routine_name=routine_name,
                 insert_position=insert_position,
                 replace_count=replace_count,
-                new_rungs=new_rungs,
+                new_rungs=modernized_rungs,
                 new_rung_comments=new_rung_comments,
                 new_tags=new_tags
             )

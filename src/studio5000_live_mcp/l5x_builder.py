@@ -14,6 +14,7 @@ Enforces Rockwell Schema rules to prevent common Logix Designer import errors:
 """
 
 import os
+import re
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Any
 import xml.etree.ElementTree as ET
@@ -26,6 +27,43 @@ class L5XValidationError(Exception):
 
 class L5XBuilder:
     """Builds and validates Rockwell Logix XML import envelopes."""
+
+    # IEC 61131-3 comparison mnemonic mapping for Studio 5000 v36+ (v36, v37, v38)
+    LEGACY_TO_IEC_COMPARISONS: Dict[str, str] = {
+        "EQU": "EQ",
+        "NEQ": "NE",
+        "LES": "LT",
+        "LEQ": "LE",
+        "GRT": "GT",
+        "GEQ": "GE",
+    }
+
+    @classmethod
+    def modernize_rll_mnemonics(cls, rung_text: str, software_revision: str = "38.00") -> str:
+        """
+        Modernizes legacy Rockwell comparison instruction mnemonics to IEC 61131-3 syntax
+        for Studio 5000 v36+:
+        - EQU -> EQ
+        - NEQ -> NE
+        - LES -> LT
+        - LEQ -> LE
+        - GRT -> GT
+        - GEQ -> GE
+        """
+        try:
+            clean_rev = re.sub(r'[^0-9.]', '', software_revision)
+            rev_major = float(clean_rev.split(".")[0])
+        except Exception:
+            rev_major = 38.0
+
+        if rev_major >= 36.0:
+            def _repl(match):
+                mnemonic = match.group(1).upper()
+                return cls.LEGACY_TO_IEC_COMPARISONS.get(mnemonic, match.group(1)) + "("
+
+            pattern = r'\b(EQU|NEQ|LES|LEQ|GRT|GEQ)\s*\('
+            return re.sub(pattern, _repl, rung_text, flags=re.IGNORECASE)
+        return rung_text
 
     @staticmethod
     def validate_rll_syntax(rung_text: str, rung_idx: Optional[int] = None) -> None:
@@ -139,6 +177,8 @@ class L5XBuilder:
         for idx, rung_text in enumerate(rungs):
             comment = comments[idx] if idx < len(comments) else ""
             clean_text = rung_text.strip()
+            # Modernize legacy comparison mnemonics to IEC 61131-3 for v36+ compatibility
+            clean_text = L5XBuilder.modernize_rll_mnemonics(clean_text, software_revision)
             if not clean_text.endswith(";"):
                 clean_text += ";"
 
@@ -290,6 +330,8 @@ class L5XBuilder:
         for idx, rung_text in enumerate(rungs_list):
             c_text = comments_list[idx] if idx < len(comments_list) else ""
             clean = rung_text.strip()
+            # Modernize legacy comparison mnemonics to IEC 61131-3 for v36+ compatibility
+            clean = L5XBuilder.modernize_rll_mnemonics(clean, software_revision)
             if not clean.endswith(";"):
                 clean += ";"
 
@@ -382,15 +424,33 @@ class L5XBuilder:
 
         # 6. Validate all Rung ladder logic texts in the document
         rungs_validated = 0
+        warnings = []
+        software_revision = root.attrib.get("SoftwareRevision", "38.00")
+        try:
+            clean_rev = re.sub(r'[^0-9.]', '', software_revision)
+            rev_major = float(clean_rev.split(".")[0])
+        except Exception:
+            rev_major = 38.0
+
         for rung_elem in root.iter("Rung"):
             rungs_validated += 1
             rung_num = rung_elem.attrib.get("Number", str(rungs_validated - 1))
             text_elem = rung_elem.find("Text")
             if text_elem is not None and text_elem.text:
+                rung_text = text_elem.text
                 L5XBuilder.validate_rll_syntax(
-                    text_elem.text,
+                    rung_text,
                     rung_idx=int(rung_num) if rung_num.isdigit() else None
                 )
+                if rev_major >= 36.0:
+                    legacy_matches = re.findall(r'\b(EQU|NEQ|LES|LEQ|GRT|GEQ)\s*\(', rung_text, flags=re.IGNORECASE)
+                    for leg in legacy_matches:
+                        leg_upper = leg.upper()
+                        modern = L5XBuilder.LEGACY_TO_IEC_COMPARISONS.get(leg_upper, leg_upper)
+                        warnings.append(
+                            f"Rung {rung_num}: Uses legacy comparison mnemonic '{leg_upper}'. "
+                            f"Studio 5000 v36+ requires modern IEC mnemonic '{modern}'."
+                        )
 
         return {
             "valid": True,
@@ -398,7 +458,8 @@ class L5XBuilder:
             "target_name": target_name,
             "contains_context": contains_context,
             "target_element_found": target_element is not None,
-            "rungs_validated": rungs_validated
+            "rungs_validated": rungs_validated,
+            "warnings": warnings
         }
 
     @staticmethod
