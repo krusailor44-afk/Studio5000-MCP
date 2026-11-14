@@ -110,3 +110,31 @@ def test_assemble_edits_unconfirmed_safeguard():
     assert result["status"] == "REJECTED_BY_SAFEGUARD"
     assert "HUMAN-IN-THE-LOOP SAFEGUARD TRIGGERED" in result["error"]
     assert result["confirmed"] is False
+
+
+def test_cpt_and_math_instructions_accepted():
+    """Verify that CPT, PID, MOVE, and standard math instructions pass without AOI false-positives."""
+    rungs = [
+        "CPT(Drive_Freq_Cmd,(Auto_SP_Percent/100)*(Max_Freq_Hz*100));",
+        "MOVE(100, Preset_Value);",
+        "PID(Process_PID, Process_PV, 0, Process_CV, 0, 0, 0);"
+    ]
+    SafetyValidator.validate_proposed_rungs(
+        routine_name="MainRoutine",
+        routine_type="RLL",
+        rungs=rungs
+    )
+
+
+def test_cpt_expression_detects_safety_tags():
+    """Verify that safety tags embedded inside complex CPT expressions are caught and rejected."""
+    bad_cpt_rung = ["CPT(Target_Speed, (Safety_Speed_Limit / 100) * 6000);"]
+    with pytest.raises(SafetyGateViolation) as exc_info:
+        SafetyValidator.validate_proposed_rungs(
+            routine_name="MainRoutine",
+            routine_type="RLL",
+            rungs=bad_cpt_rung
+        )
+    assert "PROHIBITED_SAFETY_TAG" in str(exc_info.value)
+    assert "Safety_Speed_Limit" in str(exc_info.value)
+

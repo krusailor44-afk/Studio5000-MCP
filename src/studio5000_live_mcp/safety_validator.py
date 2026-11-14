@@ -33,13 +33,16 @@ class SafetyValidator:
         "XIC", "XIO", "OTE", "OTL", "OTU", "ONS", "OSR", "OSF",
         "TON", "TOF", "RTO", "CTU", "CTD", "RES",
         "EQU", "NEQ", "LES", "LEQ", "GRT", "GEQ", "LIM", "MEQ",
-        "MOV", "MVM", "COP", "CPS", "FLL", "CLR",
-        "ADD", "SUB", "MUL", "DIV", "MOD", "SQR", "NEG", "ABS",
+        "MOV", "MOVE", "MVM", "COP", "CPS", "FLL", "CLR",
+        "ADD", "SUB", "MUL", "DIV", "MOD", "SQR", "NEG", "ABS", "TRN",
         "AND", "OR", "XOR", "NOT",
+        "CPT", "PID",
+        "LN", "LOG", "SIN", "COS", "TAN", "ASN", "ACS", "ATN", "DEG", "RAD",
         "JMP", "LBL", "JSR", "RET", "SBR", "TND", "MCR",
         "BSL", "BSR", "FFL", "FFU", "LFL", "LFU",
         "FAL", "FSC", "AVE", "STD", "SRT",
         "BTD", "DCD", "ENC", "SWPB",
+        "SQI", "SQO", "SQL", "TOD", "FRD", "SIZE",
         "GSV", "SSV", "MSG", "ALMA", "ALMD"
     }
 
@@ -105,29 +108,101 @@ class SafetyValidator:
                 reason=f"Routine type is '{norm_type}'. Online edits are strictly restricted to Relay Ladder Logic (RLL) routines. Function Block Diagrams (FBD) and Sequential Function Charts (SFC) are denied."
             )
 
+    @staticmethod
+    def _split_top_level_commas(s: str) -> List[str]:
+        """Splits an argument string by comma only at the outermost parenthesis/bracket depth."""
+        parts = []
+        cur = []
+        p_depth = 0
+        b_depth = 0
+        for ch in s:
+            if ch == '(':
+                p_depth += 1
+            elif ch == ')':
+                p_depth = max(0, p_depth - 1)
+            elif ch == '[':
+                b_depth += 1
+            elif ch == ']':
+                b_depth = max(0, b_depth - 1)
+            elif ch == ',' and p_depth == 0 and b_depth == 0:
+                parts.append("".join(cur))
+                cur = []
+                continue
+            cur.append(ch)
+        if cur:
+            parts.append("".join(cur))
+        return parts
+
+    @classmethod
+    def parse_instructions_and_args(cls, rung_text: str) -> List[tuple[str, str]]:
+        """
+        Parses all instruction calls in a rung, balancing parentheses even for complex
+        expressions (e.g. CPT arithmetic, PID, array indexing).
+        Returns a list of (instruction_name, args_string) tuples.
+        """
+        results = []
+        i = 0
+        n = len(rung_text)
+        while i < n:
+            m = re.search(r'\b([A-Za-z0-9_]+)\s*\(', rung_text[i:])
+            if not m:
+                break
+            inst_name = m.group(1).upper()
+            open_paren = i + m.end() - 1
+
+            # Match closing parenthesis by depth
+            depth = 1
+            j = open_paren + 1
+            while j < n and depth > 0:
+                ch = rung_text[j]
+                if ch == '(':
+                    depth += 1
+                elif ch == ')':
+                    depth -= 1
+                j += 1
+
+            if depth == 0:
+                args_str = rung_text[open_paren + 1:j - 1]
+                results.append((inst_name, args_str))
+                i = j
+            else:
+                break
+        return results
+
     @classmethod
     def extract_operands_from_rung(cls, rung_text: str) -> List[str]:
         """Extracts all variable/tag operands referenced within a rung string."""
         operands = []
-        for match in cls.INSTRUCTION_PATTERN.finditer(rung_text):
-            args_str = match.group(2)
+        for inst, args_str in cls.parse_instructions_and_args(rung_text):
             if not args_str:
                 continue
-            # Split comma-separated arguments
-            raw_args = [arg.strip() for arg in args_str.split(",")]
-            for arg in raw_args:
-                # Exclude pure numeric literals, question marks, and string literals
-                if arg and not arg.startswith('"') and not arg.startswith("'") and not arg.replace(".", "", 1).isdigit() and arg != "?":
-                    operands.append(arg)
+
+            if inst == "CPT":
+                # First argument is destination tag
+                parts = args_str.split(",", 1)
+                dest = parts[0].strip()
+                if dest and not dest.isdigit():
+                    operands.append(dest)
+                if len(parts) > 1:
+                    # In arithmetic expression, extract all identifier tokens (tags)
+                    expr = parts[1]
+                    math_func = {"SIN", "COS", "TAN", "ASN", "ACS", "ATN", "SQR", "LN", "LOG", "DEG", "RAD", "TRN", "ABS"}
+                    for token in re.findall(r'[A-Za-z_][A-Za-z0-9_.]*', expr):
+                        if token.upper() not in math_func and not token.replace(".", "", 1).isdigit():
+                            operands.append(token)
+            else:
+                raw_args = cls._split_top_level_commas(args_str)
+                for arg in raw_args:
+                    clean_arg = arg.strip()
+                    if (clean_arg and not clean_arg.startswith('"') and not clean_arg.startswith("'")
+                            and not clean_arg.replace(".", "", 1).isdigit() and clean_arg != "?"):
+                        operands.append(clean_arg)
         return operands
 
     @classmethod
     def extract_instructions_from_rung(cls, rung_text: str) -> List[str]:
         """Extracts instruction mnemonics called in the rung."""
-        instructions = []
-        for match in cls.INSTRUCTION_PATTERN.finditer(rung_text):
-            instructions.append(match.group(1).strip().upper())
-        return instructions
+        return [inst for inst, _ in cls.parse_instructions_and_args(rung_text)]
 
     @classmethod
     def validate_proposed_rungs(

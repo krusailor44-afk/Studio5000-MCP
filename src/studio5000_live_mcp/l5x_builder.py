@@ -28,6 +28,82 @@ class L5XBuilder:
     """Builds and validates Rockwell Logix XML import envelopes."""
 
     @staticmethod
+    def validate_rll_syntax(rung_text: str, rung_idx: Optional[int] = None) -> None:
+        """
+        Validates Rockwell Relay Ladder Logic (RLL) text syntax against Studio 5000 scanner rules.
+        
+        Enforces:
+        1. Non-empty rung text terminating with a semicolon (;).
+        2. Balanced parentheses and brackets.
+        3. Parallel branch structure:
+           - Every branch [...] must contain at least 2 legs separated by commas at that nesting level (legs >= 2).
+           - Single-leg branches (e.g. [[ leg1 , leg2 ]] or [ leg ]) cause Studio 5000 Error 12740-0.
+           - Rejects empty branch legs (e.g. [, leg] or [leg ,] or [leg ,, leg]).
+           - Rejects commas outside branches or instruction argument parentheses.
+        """
+        clean = rung_text.strip()
+        prefix = f"Rung {rung_idx}: " if rung_idx is not None else "RLL Syntax: "
+        if not clean:
+            raise L5XValidationError(f"{prefix}Empty rung text.")
+        if not clean.endswith(";"):
+            raise L5XValidationError(f"{prefix}Rung must terminate with a semicolon ';'.")
+
+        clean_body = clean[:-1].strip()
+        paren_depth = 0
+        branch_stack = []
+
+        for i, ch in enumerate(clean_body):
+            if ch == '(':
+                paren_depth += 1
+            elif ch == ')':
+                if paren_depth <= 0:
+                    raise L5XValidationError(f"{prefix}Unbalanced closing parenthesis ')' at character position {i + 1}.")
+                paren_depth -= 1
+            elif ch == '[':
+                if paren_depth > 0:
+                    # Array index inside instruction operand, e.g. FAULT[0].1
+                    pass
+                else:
+                    branch_stack.append({'legs': 1, 'has_content': False, 'col': i + 1})
+            elif ch == ']':
+                if paren_depth > 0:
+                    # Array index closing bracket inside operand
+                    pass
+                else:
+                    if not branch_stack:
+                        raise L5XValidationError(f"{prefix}Unbalanced closing bracket ']' at character position {i + 1}.")
+                    branch = branch_stack.pop()
+                    if not branch['has_content']:
+                        raise L5XValidationError(f"{prefix}Empty branch leg detected before ']' at character position {i + 1}.")
+                    if branch['legs'] < 2:
+                        col = branch['col']
+                        raise L5XValidationError(
+                            f"{prefix}Invalid parallel branch at character position {col}: branch has only 1 leg (no ',' separator). "
+                            f"A branch must contain 2 or more comma-separated legs (e.g. '[ leg1 , leg2 ]'). "
+                            f"Single-leg branches violate Rockwell RLL schema and trigger Studio 5000 Error 12740-0."
+                        )
+                    if branch_stack:
+                        branch_stack[-1]['has_content'] = True
+            elif ch == ',':
+                if paren_depth == 0:
+                    if not branch_stack:
+                        raise L5XValidationError(f"{prefix}Comma ',' at character position {i + 1} found outside of any branch or instruction argument.")
+                    if not branch_stack[-1]['has_content']:
+                        raise L5XValidationError(f"{prefix}Empty branch leg detected before ',' at character position {i + 1}.")
+                    branch_stack[-1]['legs'] += 1
+                    branch_stack[-1]['has_content'] = False
+            else:
+                if not ch.isspace():
+                    if branch_stack:
+                        branch_stack[-1]['has_content'] = True
+
+        if paren_depth != 0:
+            raise L5XValidationError(f"{prefix}Unbalanced opening parenthesis '(' (depth={paren_depth}).")
+        if branch_stack:
+            col = branch_stack[-1]['col']
+            raise L5XValidationError(f"{prefix}Unclosed branch '[' starting at character position {col}.")
+
+    @staticmethod
     def build_partial_import_envelope(
         controller_name: str,
         program_name: str,
@@ -65,6 +141,9 @@ class L5XBuilder:
             clean_text = rung_text.strip()
             if not clean_text.endswith(";"):
                 clean_text += ";"
+
+            # Validate RLL ladder syntax to prevent Studio 5000 import failures (Error 12740-0)
+            L5XBuilder.validate_rll_syntax(clean_text, idx)
 
             comment_elem = f"<Comment><![CDATA[{comment}]]></Comment>" if comment else ""
             rung_xml = (
@@ -213,6 +292,10 @@ class L5XBuilder:
             clean = rung_text.strip()
             if not clean.endswith(";"):
                 clean += ";"
+
+            # Validate RLL ladder syntax to prevent Studio 5000 import failures (Error 12740-0)
+            L5XBuilder.validate_rll_syntax(clean, idx)
+
             comment_elem = f"<Comment><![CDATA[{c_text}]]></Comment>\n" if c_text else ""
             rung_entries.append(
                 f'<Rung Number="{idx}" Type="N">\n{comment_elem}<Text><![CDATA[{clean}]]></Text>\n</Rung>'
@@ -297,12 +380,25 @@ class L5XBuilder:
                     f"TargetName mismatch: Root TargetName='{target_name}' does not match element Name='{target_elem_name}'."
                 )
 
+        # 6. Validate all Rung ladder logic texts in the document
+        rungs_validated = 0
+        for rung_elem in root.iter("Rung"):
+            rungs_validated += 1
+            rung_num = rung_elem.attrib.get("Number", str(rungs_validated - 1))
+            text_elem = rung_elem.find("Text")
+            if text_elem is not None and text_elem.text:
+                L5XBuilder.validate_rll_syntax(
+                    text_elem.text,
+                    rung_idx=int(rung_num) if rung_num.isdigit() else None
+                )
+
         return {
             "valid": True,
             "target_type": target_type,
             "target_name": target_name,
             "contains_context": contains_context,
-            "target_element_found": target_element is not None
+            "target_element_found": target_element is not None,
+            "rungs_validated": rungs_validated
         }
 
     @staticmethod

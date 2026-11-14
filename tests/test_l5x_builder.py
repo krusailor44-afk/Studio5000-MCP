@@ -132,3 +132,76 @@ def test_server_build_and_validate_tools(tmp_path):
     assert val_res["valid"] is True
     assert val_res["target_name"] == "TEST_AOI"
     assert val_res["target_type"] == "AddOnInstructionDefinition"
+    assert val_res.get("rungs_validated") == 1
+
+
+def test_validate_rll_syntax_detects_single_leg_branch():
+    """Verifies prevention of Studio 5000 Error 12740-0 (Line 162 single-leg branch)."""
+    # The exact malformed rung that caused Error 12740-0 in Studio 5000
+    bad_rung = "[[XIO(Auto_Man_Mode) CPT(Drive_Freq_Cmd,Auto_SP_Percent/100.0*Max_Freq_Hz*100) ,XIC(Auto_Man_Mode) CPT(Drive_Freq_Cmd,Man_SP_Percent/100.0*Max_Freq_Hz*100) ] ];"
+    with pytest.raises(L5XValidationError) as exc_info:
+        L5XBuilder.validate_rll_syntax(bad_rung, rung_idx=3)
+
+    assert "Rung 3" in str(exc_info.value)
+    assert "Invalid parallel branch" in str(exc_info.value)
+    assert "12740-0" in str(exc_info.value)
+
+    # Bare single-leg branch
+    with pytest.raises(L5XValidationError) as exc_info:
+        L5XBuilder.validate_rll_syntax("[XIC(Start_PB) OTE(Run_Motor) ];")
+    assert "branch has only 1 leg" in str(exc_info.value)
+
+
+def test_validate_rll_syntax_detects_unclosed_brackets_and_parens():
+    with pytest.raises(L5XValidationError) as exc_info:
+        L5XBuilder.validate_rll_syntax("XIC(Start_PB OTE(Run_Motor);")
+    assert "Unbalanced opening parenthesis" in str(exc_info.value)
+
+    with pytest.raises(L5XValidationError) as exc_info:
+        L5XBuilder.validate_rll_syntax("[XIC(Start) ,XIC(Run) OTE(Motor);")
+    assert "Unclosed branch" in str(exc_info.value)
+
+
+def test_validate_rll_syntax_detects_empty_legs():
+    with pytest.raises(L5XValidationError) as exc_info:
+        L5XBuilder.validate_rll_syntax("[, XIC(Start) ] OTE(Motor);")
+    assert "Empty branch leg" in str(exc_info.value)
+
+    with pytest.raises(L5XValidationError) as exc_info:
+        L5XBuilder.validate_rll_syntax("[XIC(Start) , ] OTE(Motor);")
+    assert "Empty branch leg" in str(exc_info.value)
+
+
+def test_validate_rll_syntax_detects_missing_semicolon():
+    with pytest.raises(L5XValidationError) as exc_info:
+        L5XBuilder.validate_rll_syntax("XIC(Start) OTE(Motor)")
+    assert "must terminate with a semicolon" in str(exc_info.value)
+
+
+def test_validate_rll_syntax_accepts_valid_branches_and_array_tags():
+    # Valid 2-leg branch
+    L5XBuilder.validate_rll_syntax("[XIC(Auto) OTE(Cmd1) ,XIC(Man) OTE(Cmd2) ];")
+
+    # Valid nested branches
+    L5XBuilder.validate_rll_syntax("[[XIO(Mode) XIC(Start) ,XIC(Mode) XIC(Run) ] OTE(Active) ,XIC(Active) OTE(Out1) ];")
+
+    # Array index tags inside parens
+    L5XBuilder.validate_rll_syntax("XIC(FAULT[0].11) [XIC(Remote_ENBT[1]) ,XIC(Local:1:I.Data[2]) ] OTE(Alarm[0]);")
+
+    # Complex CPT expression
+    L5XBuilder.validate_rll_syntax("CPT(WATER_VFD_P1:O.FreqCommand,(PID_FOR_P1_CV/16383*6000));")
+
+
+def test_build_aoi_envelope_rejects_invalid_rung():
+    params = [{"name": "InVal", "type": "REAL", "usage": "Input"}]
+    bad_rungs = ["[[XIC(InVal) OTE(OutVal) ]];"]
+
+    with pytest.raises(L5XValidationError) as exc_info:
+        L5XBuilder.build_aoi_envelope(
+            controller_name="TestCPU",
+            aoi_name="AOI_TEST",
+            parameters=params,
+            rungs=bad_rungs
+        )
+    assert "12740-0" in str(exc_info.value)
+

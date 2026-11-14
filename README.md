@@ -196,7 +196,7 @@ Add to `~/.gemini/antigravity/mcp_config.json`:
 | **`untest_edits`** | Lifecycle | Reverts controller to original logic (`WM_COMMAND 32062`). | `program_name`, `routine_name` |
 | **`assemble_edits`** | Lifecycle | Finalizes edits permanently (`WM_COMMAND 32063`). **Requires confirmation**. | `program_name`, `routine_name`, `confirmed: bool` |
 | **`build_aoi_l5x`** | Generator | Generates 100% schema-compliant AOI `.L5X` file with `Use="Target"`. | `controller_name`, `aoi_name`, `parameters`, `rungs`, `output_path` |
-| **`validate_l5x_file`** | Validator | Verifies `.L5X` file against Rockwell schema; catches Error 25134-80044178 and Error 5078-0 before import. | `file_path` |
+| **`validate_l5x_file`** | Validator | Verifies `.L5X` file against Rockwell schema; catches Error 25134-80044178, Error 5078-0, and RLL branch/syntax errors (Error 12740-0) before import. | `file_path` |
 
 ---
 
