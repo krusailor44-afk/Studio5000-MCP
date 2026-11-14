@@ -33,6 +33,7 @@ class SafetyValidator:
         "XIC", "XIO", "OTE", "OTL", "OTU", "ONS", "OSR", "OSF",
         "TON", "TOF", "RTO", "CTU", "CTD", "RES",
         "EQU", "NEQ", "LES", "LEQ", "GRT", "GEQ", "LIM", "MEQ",
+        "EQ", "NE", "LT", "LE", "GT", "GE",
         "MOV", "MOVE", "MVM", "COP", "CPS", "FLL", "CLR",
         "ADD", "SUB", "MUL", "DIV", "MOD", "SQR", "NEG", "ABS", "TRN",
         "AND", "OR", "XOR", "NOT",

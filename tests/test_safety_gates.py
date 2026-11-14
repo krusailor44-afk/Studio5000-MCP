@@ -104,6 +104,23 @@ def test_valid_rll_rung_acceptance():
     )
 
 
+def test_iec_comparison_instructions_accepted():
+    """Verify that Studio 5000 v36+ IEC comparisons (EQ, NE, LT, LE, GT, GE) are accepted."""
+    iec_rungs = [
+        "LT(Target_Speed_Hz,Min_Speed_Hz)MOVE(Min_Speed_Hz,Target_Speed_Hz);",
+        "GT(Target_Speed_Hz,Max_Speed_Hz)MOVE(Max_Speed_Hz,Target_Speed_Hz);",
+        "EQ(Port_Process_Data_Size,0)MOVE(1,Data_Size);",
+        "LE(Level_PV,Low_Limit)OTE(Low_Alarm);",
+        "GE(Level_PV,High_Limit)OTE(High_Alarm);",
+        "NE(Recipe_ID,0)OTE(Recipe_Active);"
+    ]
+    SafetyValidator.validate_proposed_rungs(
+        routine_name="MainRoutine",
+        routine_type="RLL",
+        rungs=iec_rungs
+    )
+
+
 def test_assemble_edits_unconfirmed_safeguard():
     """Verify that assemble_edits refuses execution when confirmed=False."""
     result = assemble_edits(program_name="MainProgram", routine_name="MainRoutine", confirmed=False)
