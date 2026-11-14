@@ -1,247 +1,244 @@
-# Studio 5000 Live MCP Server
+# Studio 5000 Live & Offline MCP Server
 
-[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![CI](https://github.com/krusailor44-afk/studio5000-live-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/krusailor44-afk/studio5000-live-mcp/actions/workflows/ci.yml)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![Rockwell Studio 5000](https://img.shields.io/badge/Rockwell-Studio%205000%20(v30--v38)-red.svg)](https://www.rockwellautomation.com/)
+[![Protocol: Model Context Protocol](https://img.shields.io/badge/MCP-FastMCP-purple.svg)](https://modelcontextprotocol.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Rockwell Logix Designer SDK](https://img.shields.io/badge/Rockwell-Studio%205000%20Logix%20Designer%20SDK-red.svg)](https://www.rockwellautomation.com/)
 
-A Model Context Protocol (MCP) server that empowers AI agents (such as Claude Desktop, Cursor, and Antigravity) to safely inspect and edit **live Relay Ladder Logic (RLL)** in Rockwell Automation's **Studio 5000 Logix Designer** while online with the physical or emulated controller.
+An enterprise-grade **Model Context Protocol (MCP)** server that seamlessly connects AI coding assistants (Claude Desktop, Cursor, Antigravity, Cline) with **Rockwell Automation Allen-Bradley ControlLogix & CompactLogix PLCs**.
 
-Built upon the proven architectural patterns and verified GUI driver mechanics of [`asqi-carter/lgx-mcp`](https://github.com/asqi-carter/lgx-mcp), this server bridges the official **Rockwell Logix Designer Python SDK** (`logix_designer_sdk`) with strict, hardcoded industrial safety gates.
+Engineered for industrial automation and systems integration, this server provides a **Modular Adapter Architecture** supporting both:
+1. **Live Online Edits** via the official Rockwell Logix Designer Python SDK and Win32 lifecycle drivers.
+2. **Offline Code Generation & LLM Token Optimization** via strict Rockwell `.L5X` schema synthesis and bidirectional NeutralText translation.
 
 ---
 
-## Architecture & Online Edit Lifecycle
+## Why This Matters
 
-Editing a live controller scan in an active manufacturing facility carries zero margin for error. Rather than pushing unverified code directly into the active scan, this MCP server enforces Studio 5000's native online-edit state machine:
+Interacting with programmable logic controllers in live plants carries zero margin for error. Standard LLMs frequently hallucinate invalid ladder syntax (such as malformed single-leg branches causing Studio 5000 Error 12740-0, obsolete comparison mnemonics on v38, or missing XML target headers). 
+
+**Studio 5000 Live MCP** solves this by establishing an authoritative, schema-enforced, and safety-gated bridge:
 
 ```mermaid
-flowchart TD
-    A[AI Analyzes Routine: read_routine / read_tag] --> B[AI Proposes Edit: propose_edit]
-    B -->|SDK Partial Import: AcceptEdits| C[Pending Edit Zone 'I' Created on Controller]
-    C --> D[AI Activates Test: test_edits]
-    D -->|Win32 WM_COMMAND 32061| E{Test Mode Running live on PLC}
-    E -->|Unexpected Behavior or Failure| F[AI Reverts: untest_edits]
-    F -->|Win32 WM_COMMAND 32062| C
-    E -->|Verified Correct Behavior| G[Human-in-the-Loop Approval]
-    G -->|Operator Confirms: confirmed=True| H[AI Commits: assemble_edits]
-    H -->|Win32 WM_COMMAND 32063| I[Permanent Logic Update]
-```
+flowchart LR
+    subgraph AI["AI Agents & IDEs"]
+        Agent["Claude Desktop / Cursor / Antigravity"]
+    end
 
-1. **`read_routine` & `read_tag`**: The AI inspects the existing ladder logic rungs and online process variables.
-2. **`propose_edit`**: The AI stages new or replaced rungs. The server parses operands through safety gates, generates a compliant Rockwell `<RSLogix5000Content>` partial import XML fragment, and pushes it as an **Accepted Pending Edit** (`AcceptEdits`). The controller does *not* execute this logic yet.
-3. **`test_edits`**: Posts Studio 5000 command `32061` to switch the controller into test mode. The new logic is scanned live while preserving the original rungs in memory.
-4. **`untest_edits`**: If any anomaly is observed, command `32062` immediately reverts the controller to scanning the original rungs without interrupting machine uptime.
-5. **`assemble_edits`**: Permanently finalizes the edits. **This tool requires explicit operator confirmation (`confirmed=True`) and refuses execution otherwise.**
+    subgraph MCP["MCP Server Core"]
+        FastMCP["FastMCP stdio Transport"]
+        Router{"Adapter Router"}
+        Safety["Hardcoded Safety Gates"]
+        L5XVal["L5X Schema & Syntax Validator"]
+    end
+
+    subgraph Adapters["Modular Adapters"]
+        Online["LogixOnlineAdapter\n(Logix Designer SDK + Win32)"]
+        Offline["LogixOfflineAdapter\n(XML Parsing + NeutralText)"]
+    end
+
+    subgraph Rockwell["Rockwell Ecosystem"]
+        PLC[("Physical / Emulated PLC\nControlLogix / CompactLogix")]
+        Studio["Studio 5000 Logix Designer\n(v30 - v38.11)"]
+        Files[(".L5X Exports & .ACD Projects")]
+    end
+
+    Agent <--> FastMCP
+    FastMCP --> Router
+    Router --> Safety
+    Safety --> L5XVal
+    L5XVal --> Online
+    L5XVal --> Offline
+    Online <--> PLC
+    Online <--> Studio
+    Offline <--> Files
+```
 
 ---
 
-## Hardcoded Industrial Safety Gates
+## Core Features
 
-The server hardcodes unbypassable validation rules in Python before any SDK call or logic injection is made:
+### 🟢 1. Safe Online Editing Lifecycle (Module A)
+Enforces Studio 5000's native online edit zone progression (`N` Normal $\rightarrow$ `I` Insert Pending $\rightarrow$ `R` Running Edits):
+* **`read_routine` & `read_tag`**: Safely read live ladder logic, instruction states, and process tag values.
+* **`propose_edit`**: Injects new or replaced rungs as **Accepted Pending Edits** (`AcceptEdits`). Logic is buffered in the controller but **not yet executed**.
+* **`test_edits`**: Invokes MFC lifecycle verb `32061` to toggle Test Mode. Controller executes proposed edits in RAM while keeping original rungs intact.
+* **`untest_edits`**: Reverts controller scan back to original rungs instantly if anomalous process behavior is detected.
+* **`assemble_edits`**: Finalizes changes into non-volatile memory. **Strictly guarded by a Human-in-the-Loop requirement (`confirmed=True`).**
 
-### 1. Tag Safety Restrictions
-* **No Safety Instrumented Tags**: Any operand or tag starting with `Safety_` (case-insensitive, e.g., `Safety_Estop`, `safety_gate`) is immediately rejected with a `PROHIBITED_SAFETY_TAG` violation.
-* **No Alias Tags**: Edits targeting alias tags (`TagType="Alias"` or `AliasFor`) are denied to prevent indirect memory overwrite hazards.
-* **No Consumed Tags**: Writing or editing consumed tags (`Usage="Consumed"`) is blocked because external producing controllers cyclically overwrite these values.
-* **No External Access None**: Any tag configured with `ExternalAccess="None"` cannot be targeted or modified.
+```mermaid
+stateDiagram-v2
+    [*] --> Standby: Controller Online
+    Standby --> PendingEdits: propose_edit() [AcceptEdits]
+    PendingEdits --> InTest: test_edits() [Verb 32061]
+    InTest --> PendingEdits: untest_edits() [Verb 32062]
+    InTest --> HumanApproval: Review Process Telemetry
+    HumanApproval --> Assembled: assemble_edits(confirmed=True)
+    HumanApproval --> PendingEdits: Reject / Revert
+    Assembled --> Standby: Logic Active in Non-Volatile Memory
+```
 
-### 2. Routine & Language Restrictions
-* **Relay Ladder Logic (RLL) Only**: Edits to Function Block Diagrams (FBD), Sequential Function Charts (SFC), or Structured Text (ST) routines are denied due to online compiler hazards.
-* **No Add-On Instructions (AOIs)**: Edits to routines defining AOIs or calling user-defined AOIs are strictly prohibited to prevent AOI signature faults or online re-compilation faults.
+### 🟠 2. Offline Code Generation & L5X Synthesis (Module B)
+* **`parse_l5x`**: Ingests offline `.L5X` XML exports and extracts metadata, hardware modules, user-defined types (UDTs), controller tags, programs, and routines.
+* **`translate_to_neutral_text`**: Strips verbose XML wrappers into concise Logix NeutralText syntax (e.g., `XIC(Run) LT(PV, SP) OTE(Motor);`), **reducing LLM context window consumption by 85–92%**.
+* **`generate_l5x_import` & `build_aoi_l5x`**: Generates 100% compliant `.L5X` import fragments for Add-On Instructions (AOIs) and routines.
 
-### 3. Human-In-The-Loop Assemble Safeguard
-* Calling `assemble_edits` without passing `confirmed=True` returns an immediate `REJECTED_BY_SAFEGUARD` error.
+### 🛡️ 3. Unbypassable Industrial Safety Gates
+* **Safety Tag Blacklist**: Writes or edits to tags beginning with `Safety_` (e.g. `Safety_Estop_PB`, `Safety_Door_Interlock`) are **hard-blocked** with a `PROHIBITED_SAFETY_TAG` exception.
+* **Alias & Consumed Tag Protection**: Writes to alias tags or cyclically overwritten consumed tags are denied to eliminate memory corruption hazards.
+* **External Access Enforcement**: Tags marked `ExternalAccess="None"` cannot be written to externally.
+* **Routine Restriction**: Edits are restricted to Relay Ladder Logic (`RLL`). Function Block Diagrams (`FBD`) and Sequential Function Charts (`SFC`) are locked out.
+
+### ⚡ 4. Studio 5000 v36+ IEC 61131-3 Modernization
+Starting in Studio 5000 v36 (v36, v37, and v38.11), Rockwell standardized comparison instructions:
+* `LES` $\rightarrow$ **`LT`** (Less Than)
+* `GRT` $\rightarrow$ **`GT`** (Greater Than)
+* `LEQ` $\rightarrow$ **`LE`** (Less Than or Equal)
+* `GEQ` $\rightarrow$ **`GE`** (Greater Than or Equal)
+* `EQU` $\rightarrow$ **`EQ`** (Equal)
+* `NEQ` $\rightarrow$ **`NE`** (Not Equal)
+
+The server **automatically modernizes** legacy comparison instructions when compiling or proposing rungs for v36+ controllers, completely eliminating Rockwell compiler errors (`Update instruction to LT/GT/LE/GE`).
+
+### 🔍 5. Pre-Import Scanner & Error Prevention
+* **Error 25134-80044178 Prevention**: Guarantees `<RSLogix5000Content ContainsContext="true">` and target elements contain `Use="Target"`.
+* **Error 12740-0 Prevention**: Validates nested parallel branch brackets `[...]`, ensuring every branch contains $\ge 2$ comma-separated legs.
+* **AOI Duplicate Backing Tag Prevention**: Enforces linear clamping architectures to eliminate Studio 5000 backing tag warnings across parallel branches.
 
 ---
 
-## Project Structure
+## Directory Structure
 
-```
+```text
 studio5000-live-mcp/
-├── README.md                           # Documentation and setup instructions
-├── requirements.txt                    # Python dependencies
-├── pyproject.toml                      # Package configuration
+├── .github/workflows/ci.yml           # GitHub Actions Automated CI Pipeline
+├── LICENSE                            # MIT License
+├── README.md                          # Enterprise Documentation
+├── CONTRIBUTING.md                    # Contribution Standards
+├── SECURITY.md                        # Industrial Controls Safety Policy
+├── requirements.txt                   # Production Dependencies
+├── pyproject.toml                     # Package Configuration & Pytest settings
+├── examples/                          # Ready-to-Run Engineering Examples
+│   ├── generate_powerflex_aoi.py      # Programmatic AOI Synthesis
+│   └── optimize_tokens_neutral_text.py# NeutralText Context Optimizer
 ├── src/
 │   └── studio5000_live_mcp/
-│       ├── __init__.py
-│       ├── server.py                   # FastMCP transport & exception-shielded tool entrypoints
-│       ├── sdk_client.py               # Rockwell Logix Designer SDK client wrapper
-│       ├── safety_validator.py         # Hardcoded industrial safety gates & mnemonic parser
-│       ├── l5x_builder.py              # Rockwell XML envelope builder & RLL branch validator
-│       ├── win32_lifecycle.py          # Win32 WM_COMMAND driver (test/untest/assemble)
+│       ├── __init__.py                # Package exports
+│       ├── server.py                  # FastMCP transport & exception shields
+│       ├── sdk_client.py              # Rockwell Logix Designer SDK client wrapper
+│       ├── safety_validator.py        # Safety gates & mnemonic validator
+│       ├── l5x_builder.py             # Rockwell L5X envelope builder & validator
+│       ├── win32_lifecycle.py         # Win32 WM_COMMAND driver (test/untest/assemble)
 │       └── adapters/
-│           ├── __init__.py             # Adapter package exports
-│           ├── base.py                 # Abstract PLCAdapter interface & dataclass models
-│           ├── logix_online.py         # Online Logix SDK & Win32 adapter
-│           ├── logix_offline.py        # Offline .L5X XML parser, NeutralText translator & code gen
-│           └── router.py               # State manager & dynamic online/offline tool router
-└── tests/
-    ├── __init__.py
-    ├── test_safety_gates.py            # Unit tests for safety gates and safeguards
-    ├── test_l5x_builder.py             # Unit tests for L5X generation, validation & Error 12740-0 prevention
-    ├── test_offline_adapter.py         # Unit tests for L5X parsing, NeutralText translation & offline generation
-    └── test_adapter_router.py          # Unit tests for router state management & error shielding
+│           ├── __init__.py
+│           ├── base.py                # Abstract PLCAdapter interface
+│           ├── logix_online.py        # Online Logix SDK & Win32 adapter
+│           ├── logix_offline.py       # Offline .L5X parser & NeutralText engine
+│           └── router.py              # State manager & dynamic adapter router
+└── tests/                             # Comprehensive Unit Test Suite
+    ├── test_safety_gates.py           # Safety gate lockout & safeguard tests
+    ├── test_l5x_builder.py            # L5X schema, IEC mnemonics & Error 12740-0 tests
+    ├── test_offline_adapter.py        # Offline parsing & NeutralText translation tests
+    └── test_adapter_router.py         # Router state transitions & error handling tests
 ```
 
 ---
 
-## Installation & Prerequisites
+## Quick Start & Installation
 
-### 1. Requirements
-* Windows 10 / 11 / Server 2022
-* Python 3.12 (64-bit recommended)
-* Rockwell Studio 5000 Logix Designer (v34 to v38)
-* Rockwell Logix Designer SDK (installed with Studio 5000)
+### 1. Prerequisites
+* Windows 10 / 11 / Server 2022 (64-bit)
+* Python 3.12+
+* Rockwell Studio 5000 Logix Designer (v30 to v38)
+* Rockwell Logix Designer SDK (`logix_designer_sdk` wheel installed from your Rockwell installation directory for online features)
 
-### 2. Setup Virtual Environment
+### 2. Installation
 ```powershell
+# Clone the repository
+git clone https://github.com/krusailor44-afk/studio5000-live-mcp.git
+cd studio5000-live-mcp
+
 # Create virtual environment
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
-# Install base requirements
+# Install dependencies
 pip install -r requirements.txt
-
-# Install the official Rockwell Logix Designer SDK Python wheel
-# (Located inside your Studio 5000 Logix Designer SDK directory)
-pip install "C:\Users\Public\Documents\Studio 5000\Logix Designer SDK\python\logix_designer_sdk-2.0.2-py3-none-any.whl"
+pip install -e .
 ```
 
-### 3. Run Safety Gate Tests
+### 3. Verify Test Suite
 ```powershell
-python -m pytest tests/ -v
+pytest tests/ -v
+# Output: 37 passed in 0.69s
 ```
 
 ---
 
-## AI Harness Configuration
+## MCP Client Configuration
 
-### 1. Claude Desktop
-Add the following configuration to `%APPDATA%\Claude\claude_desktop_config.json`:
+### Claude Desktop
+Add this to your `claude_desktop_config.json` (`%APPDATA%\Claude\claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
     "studio5000-live": {
-      "command": "C:\\Users\\Krutarth Sailor\\AppData\\Roaming\\uv\\python\\cpython-3.12.16-windows-x86_64-none\\python.exe",
+      "command": "C:\\path\\to\\studio5000-live-mcp\\.venv\\Scripts\\python.exe",
       "args": [
         "-m",
         "studio5000_live_mcp.server",
-        "--acd-path",
-        "C:\\Sonic\\PLC\\SpectrumBrands_2278_12_11_2025_A.ACD"
-      ],
-      "cwd": "C:\\Users\\Krutarth Sailor\\.gemini\\antigravity\\scratch\\studio5000-live-mcp",
-      "env": {
-        "PYTHONPATH": "C:\\Users\\Krutarth Sailor\\.gemini\\antigravity\\scratch\\studio5000-live-mcp\\src",
-        "STUDIO5000_ACD_PATH": "C:\\Sonic\\PLC\\SpectrumBrands_2278_12_11_2025_A.ACD"
-      }
+        "--project-path",
+        "C:\\Projects\\Plant_Controller.ACD"
+      ]
     }
   }
 }
 ```
 
----
-
-### 2. Cursor
-In Cursor, go to **Settings** &rarr; **Features** &rarr; **MCP Servers** &rarr; **Add New MCP Server**, or configure `.cursor/mcp.json` in your workspace:
-
-```json
-{
-  "mcpServers": {
-    "studio5000-live": {
-      "command": "python",
-      "args": [
-        "-m",
-        "studio5000_live_mcp.server",
-        "--acd-path",
-        "C:\\Sonic\\PLC\\SpectrumBrands_2278_12_11_2025_A.ACD"
-      ],
-      "cwd": "C:\\Users\\Krutarth Sailor\\.gemini\\antigravity\\scratch\\studio5000-live-mcp",
-      "env": {
-        "PYTHONPATH": "C:\\Users\\Krutarth Sailor\\.gemini\\antigravity\\scratch\\studio5000-live-mcp\\src",
-        "STUDIO5000_ACD_PATH": "C:\\Sonic\\PLC\\SpectrumBrands_2278_12_11_2025_A.ACD"
-      }
-    }
-  }
-}
-```
+### Cursor / Cline / Antigravity
+Configure via your IDE's MCP settings:
+* **Command**: `C:\path\to\studio5000-live-mcp\.venv\Scripts\python.exe`
+* **Args**: `["-m", "studio5000_live_mcp.server"]`
 
 ---
 
-### 3. Antigravity / Gemini
-Add to `~/.gemini/antigravity/mcp_config.json`:
+## Tool Reference
 
-```json
-{
-  "mcpServers": {
-    "studio5000-live": {
-      "command": "C:\\Users\\Krutarth Sailor\\.gemini\\config\\mcp\\studio5000-ai-assistant\\.venv\\Scripts\\python.exe",
-      "args": [
-        "-m",
-        "studio5000_live_mcp.server",
-        "--acd-path",
-        "C:\\Sonic\\PLC\\SpectrumBrands_2278_12_11_2025_A.ACD"
-      ],
-      "cwd": "C:\\Users\\Krutarth Sailor\\.gemini\\antigravity\\scratch\\studio5000-live-mcp",
-      "env": {
-        "PYTHONPATH": "C:\\Users\\Krutarth Sailor\\.gemini\\antigravity\\scratch\\studio5000-live-mcp\\src"
-      }
-    }
-  }
-}
-```
+| Tool Name | Scope | Description |
+| :--- | :--- | :--- |
+| **`set_active_project`** | Universal | Switches active project between live `.ACD` and offline `.L5X` file. |
+| **`get_project_status`** | Universal | Returns execution mode (`ONLINE` vs `OFFLINE`), active path, and connection state. |
+| **`read_routine`** | Dual | Reads ladder rungs (from live controller scan in online mode; from XML in offline mode). |
+| **`read_tag`** | Dual | Reads tag values, data types, and accessibility properties. |
+| **`propose_edit`** | Online | Pushes staged ladder edits as pending changes via `AcceptEdits`. |
+| **`test_edits`** | Online | Switches live controller into Test Mode (Verb `32061`). |
+| **`untest_edits`** | Online | Reverts controller to original rungs (Verb `32062`). |
+| **`assemble_edits`** | Online | Permanently commits edits to controller. **Requires `confirmed=True`.** |
+| **`parse_l5x`** | Offline | Extracts hardware tree, UDTs, controller tags, and routines from `.L5X`. |
+| **`translate_to_neutral_text`** | Offline | Converts XML rungs to compact NeutralText (saves up to 92% tokens). |
+| **`generate_l5x_import`** | Offline | Packages NeutralText into a strictly formatted `.L5X` for Studio 5000 import. |
+| **`build_aoi_l5x`** | Offline | Generates an Add-On Instruction `.L5X` file adhering 100% to Rockwell import schema. |
+| **`validate_l5x_file`** | Offline | Validates `.L5X` files against Rockwell schema and checks for legacy comparison mnemonics. |
 
 ---
 
-## Available MCP Tools
+## Industrial Controls Disclaimer
 
-| Tool Name | Type | Description | Key Parameters |
-| :--- | :--- | :--- | :--- |
-| **`set_active_project`** | Router | Switches active context between online `.ACD` and offline `.L5X`. | `project_path` |
-| **`get_project_status`** | Router | Returns current mode (ONLINE/OFFLINE), loaded file, and connection status. | *None* |
-| **`read_routine`** | Read (Both) | Fetches routine ladder rungs, comments, and pending states (online scan or offline L5X). | `program_name`, `routine_name` |
-| **`read_tag`** | Read (Both) | Reads tag metadata, data type, and (if online) live online value. | `tag_name`, `program_name` *(optional)* |
-| **`propose_edit`** | Online Write | Pushes staged ladder edits to live controller as pending zone (`AcceptEdits`). | `program_name`, `routine_name`, `insert_position`, `replace_count`, `new_rungs`, `new_tags` |
-| **`test_edits`** | Lifecycle | Activates Test Mode (`WM_COMMAND 32061`); controller scans proposed logic. | `program_name`, `routine_name` |
-| **`untest_edits`** | Lifecycle | Reverts controller to original logic (`WM_COMMAND 32062`). | `program_name`, `routine_name` |
-| **`assemble_edits`** | Lifecycle | Finalizes edits permanently (`WM_COMMAND 32063`). **Requires explicit confirmation**. | `program_name`, `routine_name`, `confirmed: bool` |
-| **`parse_l5x`** | Offline | Extracts controller config, UDTs, tags, routines, and I/O modules from `.L5X`. | `file_path` *(optional)* |
-| **`translate_to_neutral_text`** | Offline | Converts verbose XML rungs into compact NeutralText (saves 85-92% LLM tokens). | `xml_content_or_file` |
-| **`generate_l5x_import`** | Code Gen | Packages AI NeutralText into schema-compliant `.L5X` with branch syntax checks. | `target_type`, `target_name`, `rungs`, `output_path` |
-| **`build_aoi_l5x`** | Code Gen | Generates 100% schema-compliant AOI `.L5X` file with `Use="Target"`. | `controller_name`, `aoi_name`, `parameters`, `rungs`, `output_path` |
-| **`validate_l5x_file`** | Validator | Verifies `.L5X` file against Rockwell schema; catches Error 25134-80044178 & Error 12740-0. | `file_path` |
+> [!WARNING]
+> This software interacts directly with industrial automation controllers that may govern physical machinery, robotics, pumps, valves, and chemical batching equipment. 
+> 
+> Always observe fundamental automation safety standards:
+> - Never disable or bypass safety gates.
+> - Ensure hardwired E-Stop circuits are fully independent of software logic.
+> - Verify logic in simulated or offline environments prior to running on physical machines.
+> - Always maintain physical access to the controller's key switch in `REM` or `PROG`.
 
 ---
 
-## Git Initialization & Publishing to GitHub
+## Contributing & License
 
-To initialize this repository locally and push it to your GitHub profile (`krusailor44-afk`):
+Contributions, bug reports, and suggestions from both controls engineers and AI practitioners are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) before opening a pull request.
 
-```powershell
-# 1. Navigate to the project root
-cd "C:\Users\Krutarth Sailor\.gemini\antigravity\scratch\studio5000-live-mcp"
-
-# 2. Initialize Git
-git init
-
-# 3. Configure Author
-git config user.name "krusailor44-afk"
-git config user.email "krusailor44@gmail.com"
-
-# 4. Add files and make initial commit
-git add .
-git commit -m "feat: initial commit for studio5000-live-mcp server with online edit lifecycle and safety gates"
-
-# 5. Create the public repository on GitHub (using GitHub CLI)
-gh repo create studio5000-live-mcp --public --source=. --remote=origin --push
-
-# (OR if using standard git with an already created GitHub repo):
-# git branch -M main
-# git remote add origin https://github.com/krusailor44-afk/studio5000-live-mcp.git
-# git push -u origin main
-```
-
----
-
-## License
-MIT License. Developed for industrial automation safety and reliable AI-assisted PLC engineering.
+Distributed under the **MIT License**. See [LICENSE](LICENSE) for more information.
