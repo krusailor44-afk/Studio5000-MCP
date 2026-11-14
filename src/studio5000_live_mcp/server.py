@@ -9,7 +9,13 @@ import os
 import sys
 import argparse
 from typing import Dict, List, Optional, Any
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except (ImportError, ModuleNotFoundError):
+    try:
+        from mcp.server import MCPServer as FastMCP
+    except (ImportError, ModuleNotFoundError):
+        from mcp.server.mcpserver import MCPServer as FastMCP
 
 from .sdk_client import Studio5000SDKClient, SDK_AVAILABLE
 from .safety_validator import SafetyValidator, SafetyGateViolation
