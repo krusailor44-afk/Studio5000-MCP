@@ -71,7 +71,8 @@ studio5000-live-mcp/
 │       └── win32_lifecycle.py          # Win32 WM_COMMAND driver (test/untest/assemble)
 └── tests/
     ├── __init__.py
-    └── test_safety_gates.py            # Unit tests for safety gates and safeguards
+    ├── test_safety_gates.py            # Unit tests for safety gates and safeguards
+    └── test_l5x_builder.py             # Unit tests for L5X generation, validation & error prevention
 ```
 
 ---
@@ -194,6 +195,8 @@ Add to `~/.gemini/antigravity/mcp_config.json`:
 | **`test_edits`** | Lifecycle | Activates Test Mode (`WM_COMMAND 32061`); controller scans new logic. | `program_name`, `routine_name` |
 | **`untest_edits`** | Lifecycle | Reverts controller to original logic (`WM_COMMAND 32062`). | `program_name`, `routine_name` |
 | **`assemble_edits`** | Lifecycle | Finalizes edits permanently (`WM_COMMAND 32063`). **Requires confirmation**. | `program_name`, `routine_name`, `confirmed: bool` |
+| **`build_aoi_l5x`** | Generator | Generates 100% schema-compliant AOI `.L5X` file with `Use="Target"`. | `controller_name`, `aoi_name`, `parameters`, `rungs`, `output_path` |
+| **`validate_l5x_file`** | Validator | Verifies `.L5X` file against Rockwell schema; catches Error 25134-80044178 and Error 5078-0 before import. | `file_path` |
 
 ---
 

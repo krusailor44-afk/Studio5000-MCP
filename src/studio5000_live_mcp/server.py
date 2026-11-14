@@ -20,6 +20,7 @@ except (ImportError, ModuleNotFoundError):
 from .sdk_client import Studio5000SDKClient, SDK_AVAILABLE
 from .safety_validator import SafetyValidator, SafetyGateViolation
 from .win32_lifecycle import Win32LifecycleDriver
+from .l5x_builder import L5XBuilder, L5XValidationError
 
 # Initialize FastMCP Server
 mcp = FastMCP(
@@ -234,6 +235,87 @@ def assemble_edits(program_name: str, routine_name: str, confirmed: bool = False
             "Original logic has been replaced with the new logic permanently."
         )
     }
+
+
+# ==========================================
+# L5X GENERATION & VALIDATION TOOLS
+# ==========================================
+
+@mcp.tool()
+def validate_l5x_file(file_path: str) -> Dict[str, Any]:
+    """
+    Validates a Rockwell Studio 5000 .L5X file before import, verifying:
+    - Root RSLogix5000Content and TargetType/TargetName matching.
+    - Presence of Use="Target" (strictly prevents Studio 5000 Error 25134-80044178).
+    - Contextual container correctness.
+    
+    Args:
+        file_path: Absolute or relative path to the .L5X file to inspect.
+    """
+    if not os.path.exists(file_path):
+        return {"valid": False, "error": f"File does not exist: {file_path}"}
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return L5XBuilder.validate_l5x(content)
+    except Exception as e:
+        return {"valid": False, "error": str(e)}
+
+
+@mcp.tool()
+def build_aoi_l5x(
+    controller_name: str,
+    aoi_name: str,
+    description: str = "",
+    parameters: Optional[List[Dict[str, Any]]] = None,
+    local_tags: Optional[List[Dict[str, Any]]] = None,
+    rungs: Optional[List[str]] = None,
+    rung_comments: Optional[List[str]] = None,
+    software_revision: str = "38.00",
+    output_path: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Constructs an Add-On Instruction (.L5X) XML definition file adhering 100% to Rockwell's
+    import schema with Use="Target" and complete parameter/local tag specifications.
+    
+    Args:
+        controller_name: Name of target controller (e.g. 'SpectrumBrands_CPU').
+        aoi_name: Name of the Add-On Instruction (e.g. 'AOI_VALVE_CONTROL').
+        description: Description of the AOI.
+        parameters: List of parameter dicts (name, type, usage, required, visible, access, description).
+        local_tags: List of local tag dicts (name, type, description).
+        rungs: List of ladder logic strings for the AOI logic routine.
+        rung_comments: Optional comments for each rung.
+        software_revision: Controller software revision (default '38.00').
+        output_path: Optional file path to save the .L5X file directly.
+    """
+    try:
+        xml_content = L5XBuilder.build_aoi_envelope(
+            controller_name=controller_name,
+            aoi_name=aoi_name,
+            description=description,
+            parameters=parameters,
+            local_tags=local_tags,
+            rungs=rungs,
+            rung_comments=rung_comments,
+            software_revision=software_revision
+        )
+        result = {
+            "status": "success",
+            "aoi_name": aoi_name,
+            "target_type": "AddOnInstructionDefinition",
+            "xml_length": len(xml_content)
+        }
+        if output_path:
+            save_res = L5XBuilder.save_l5x_file(output_path, xml_content)
+            result["file_path"] = save_res["file_path"]
+            result["bytes_written"] = save_res["bytes_written"]
+        else:
+            result["xml_content"] = xml_content
+        return result
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 
 def main():
