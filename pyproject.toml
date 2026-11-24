@@ -24,3 +24,7 @@ studio5000-live-mcp = "studio5000_live_mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
